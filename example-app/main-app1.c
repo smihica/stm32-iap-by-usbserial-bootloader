@@ -3,28 +3,42 @@
 #include "main.h"
 #include "stm32f3xx_it.h"
 #include "gpio.h"
+#include "nvs.h"
 
 /* Private function prototypes -----------------------------------------------*/
 
 uint8_t gSystemInitialized = 0;
+volatile uint8_t reset_sw_on = 0;
 
 int main(void) {
     HAL_Init();
     SystemClock_Config();
     GPIO_Init();
-
+    nvs_init();
     gSystemInitialized = 1;
-
     while (1) {
         HAL_GPIO_TogglePin(GPIOB, LED_B_Pin);
         HAL_Delay(100);
+        if (reset_sw_on) {
+            uint8_t next_run_mode = 0x01; // FLASHER_MODE
+            if (nvs_put("RUN_MODE", &next_run_mode, 1, 1) == NVS_OK &&
+                nvs_commit()                              == NVS_OK)
+            {
+                HAL_Delay(10);
+                NVIC_SystemReset();
+                HAL_Delay(1000);
+            }
+        }
     }
 }
 
 void main_tick_1ms() {}
 void main_tick_5ms() {}
-void main_tick_10ms()  {}
-void main_tick_50ms()  {}
+void main_tick_10ms() {}
+void main_tick_50ms() {
+    uint32_t on = HAL_GPIO_ReadPin(GPIOC, SW_Pin) == 1 ? 0 : 1;
+    if (on && !reset_sw_on) reset_sw_on = 1;
+}
 void main_tick_100ms() {
     HAL_GPIO_TogglePin(GPIOB, LED_R_Pin);
 }

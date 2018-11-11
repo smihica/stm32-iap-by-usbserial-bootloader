@@ -4,16 +4,28 @@
 CRC_HandleTypeDef hcrc;
 
 void CRC_Init() {
-  __HAL_RCC_CRC_CLK_ENABLE();
+    __HAL_RCC_CRC_CLK_ENABLE();
+    hcrc.Instance = CRC;
+    hcrc.Init.DefaultPolynomialUse = DEFAULT_POLYNOMIAL_ENABLE;
+    hcrc.Init.DefaultInitValueUse = DEFAULT_INIT_VALUE_ENABLE;
+    hcrc.Init.InputDataInversionMode = CRC_INPUTDATA_INVERSION_BYTE;
+    hcrc.Init.OutputDataInversionMode = CRC_OUTPUTDATA_INVERSION_ENABLE;
+    hcrc.InputDataFormat = CRC_INPUTDATA_FORMAT_BYTES;
+    HAL_CRC_Init(&hcrc);
+}
 
-  hcrc.Instance = CRC;
-  hcrc.Init.DefaultPolynomialUse = DEFAULT_POLYNOMIAL_DISABLE;
-  hcrc.Init.DefaultInitValueUse = DEFAULT_INIT_VALUE_DISABLE;
-  hcrc.Init.GeneratingPolynomial = 0x4C11DB7;
-  hcrc.Init.CRCLength = CRC_POLYLENGTH_32B;
-  hcrc.Init.InitValue = 0xFFFFFFFF;
-  hcrc.Init.InputDataInversionMode = CRC_INPUTDATA_INVERSION_NONE;
-  hcrc.Init.OutputDataInversionMode = CRC_OUTPUTDATA_INVERSION_DISABLE;
-  hcrc.InputDataFormat = CRC_INPUTDATA_FORMAT_WORDS;
-  HAL_CRC_Init(&hcrc);
+void CRC_DeInit() {
+    __HAL_RCC_CRC_CLK_DISABLE();
+    hcrc.Instance = CRC;
+    hcrc.Init.DefaultPolynomialUse = DEFAULT_POLYNOMIAL_ENABLE;
+    hcrc.Init.DefaultInitValueUse = DEFAULT_INIT_VALUE_ENABLE;
+    hcrc.Init.InputDataInversionMode = CRC_INPUTDATA_INVERSION_BYTE;
+    hcrc.Init.OutputDataInversionMode = CRC_OUTPUTDATA_INVERSION_ENABLE;
+    hcrc.InputDataFormat = CRC_INPUTDATA_FORMAT_BYTES;
+    HAL_CRC_DeInit(&hcrc);
+}
+
+uint32_t calc_crc32(uint32_t* address, uint32_t size_in_byte)
+{
+    return ~(HAL_CRC_Calculate(&hcrc, address, size_in_byte));
 }

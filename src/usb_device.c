@@ -5,7 +5,11 @@
 #include "usbd_cdc.h"
 #include "usbd_cdc_if.h"
 
+#define USB_BUSY_BREAK_THRESHOLD 0x07FFFF
+
 USBD_HandleTypeDef hUsbDeviceFS;
+static uint8_t USB_tx_buffer[0x200] = { 0 };
+static volatile uint8_t USB_tx_buffer_lead_ptr = 0;
 
 void USB_Init(void)
 {
@@ -15,7 +19,37 @@ void USB_Init(void)
     USBD_Start(&hUsbDeviceFS);
 }
 
-#define USB_BUSY_BREAK_THRESHOLD 0x07FFFF
+uint32_t USB_SendQueuePacket(packet_t const* p)
+{
+    __disable_irq();
+    uint32_t w = packet_serialize(p, USB_tx_buffer+USB_tx_buffer_lead_ptr, 0x200-USB_tx_buffer_lead_ptr);
+    USB_tx_buffer_lead_ptr += w;
+    __enable_irq();
+    return w;
+}
+
+uint32_t USB_SendQueue(uint8_t const* buffer, uint32_t size)
+{
+    __disable_irq();
+    uint32_t i;
+    for (i = 0; i < size; i++) {
+        USB_tx_buffer[USB_tx_buffer_lead_ptr++] = buffer[i];
+        if (USB_tx_buffer_lead_ptr >= 0xFF) {
+            __enable_irq();
+            return i+1;
+        }
+    }
+    __enable_irq();
+    return i;
+}
+
+void USB_SendTick()
+{
+    if (USB_tx_buffer_lead_ptr > 0) {
+        USB_Send(USB_tx_buffer, USB_tx_buffer_lead_ptr);
+        USB_tx_buffer_lead_ptr = 0;
+    }
+}
 
 void USB_Send(uint8_t* buffer, uint32_t size)
 {
@@ -40,5 +74,3 @@ void USB_Send(uint8_t* buffer, uint32_t size)
         if (hcdc->TxState == 0) break;
     }
 }
-
-

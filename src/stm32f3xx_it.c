@@ -74,7 +74,7 @@ void PendSV_Handler(void)
 }
 
 volatile uint32_t msCount = 0;
-extern uint8_t gSystemInitialized;
+extern volatile uint8_t gSystemInitialized;
 
 /**
 * @brief This function handles System tick timer.

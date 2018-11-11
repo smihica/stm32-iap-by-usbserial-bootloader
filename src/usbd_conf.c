@@ -4,6 +4,7 @@
 #include "usbd_def.h"
 #include "usbd_core.h"
 #include "usbd_cdc.h"
+#include "usb_device.h"
 
 PCD_HandleTypeDef hpcd_USB_FS;
 

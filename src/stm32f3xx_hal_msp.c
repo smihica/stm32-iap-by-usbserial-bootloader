@@ -49,6 +49,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "init.h"
 #include "stm32f3xx_hal.h"
+#include "usb_device.h"
 
 void _Error_Handler(char const * str, int line) {
     PANIC("at stm32f3xx_hal_msp.c %d\n", line);

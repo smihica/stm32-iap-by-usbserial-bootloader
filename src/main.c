@@ -1,4 +1,5 @@
 #include "init.h"
+#include "partition.h"
 #include <string.h>
 #include "main.h"
 #include "stm32f3xx_it.h"
@@ -6,53 +7,23 @@
 #include "usbd_cdc_if.h"
 #include "gpio.h"
 #include "crc.h"
-#include "TI_aes_128.h"
+#include "nvs.h"
+#include "packet.h"
+#include "dispatcher.h"
 
-typedef void (*pFunction)(void);
+typedef void (*pFunction)();
 
-uint8_t gSystemInitialized = 0;
+volatile uint8_t gSystemInitialized = 0;
 
-uint8_t  USB_rx_buffer[0xFF];
-volatile uint8_t USB_rx_buffer_lead_ptr = 0;
-volatile uint8_t USB_rx_buffer_lead_ptr_last = 0;
-
-uint8_t  USB_tx_buffer[0xFF];
-volatile uint8_t USB_tx_buffer_lead_ptr = 0;
-
-/* Global macros */
-#define ACK                 0x79
-#define NACK                0x1F
-#define CMD_ERASE           0x43
-#define CMD_GETID           0x02
-#define CMD_WRITE           0x2b
-#define CMD_RESET           0xCC
-
-#define APP_START_ADDRESS   0x08008000 /* In STM32F303RE this corresponds with the start address of Page 6 */
-
-#define SRAM_SIZE           64*1024 // STM32F303RE has 64KB of RAM
-#define SRAM_END            (SRAM_BASE + SRAM_SIZE)
-#define FLASH_TOTAL_PAGES   255
+uint8_t  USB_rx_buffer[0x200];
+volatile uint32_t USB_rx_buffer_lead_ptr = 0;
 
 #define ENABLE_BOOTLOADER_PROTECTION 0
 #define PAGES_TO_PROTECT (OB_WRP_PAGES0TO1 | OB_WRP_PAGES2TO3 | OB_WRP_PAGES4TO5)
-/* Private variables ---------------------------------------------------------*/
 
-/* The AES_KEY cannot be defined const, because the aes_enc_dec() function
- temporarily modifies its content */
-uint8_t AES_KEY[] = { 0x4D, 0x61, 0x73, 0x74, 0x65, 0x72, 0x69, 0x6E, 0x67,
-                      0x20, 0x20, 0x53, 0x54, 0x4D, 0x33, 0x32 };
-
-extern CRC_HandleTypeDef hcrc;
-
-/* Private function prototypes -----------------------------------------------*/
 void _start(void);
 void CHECK_AND_SET_FLASH_PROTECTION(void);
-void cmdErase(uint8_t *pucData);
-void cmdGetID(uint8_t *pucData);
-void cmdWrite(uint8_t *pucData);
-void cmdReset(uint8_t *pucData);
 int main(void);
-void MX_CRC_Init(void);
 
 /* Minimal vector table */
 uint32_t *vector_table[] __attribute__((section(".isr_vector"))) = {
@@ -94,6 +65,8 @@ uint32_t *vector_table[] __attribute__((section(".isr_vector"))) = {
 	0,
 	(uint32_t *) USB_LP_CAN_RX0_IRQHandler
 };
+
+uint32_t const * const __nvs_flash[NVS_SIZE / 4] __attribute__((section(".nvs_flash"))) = { 0 };
 
 // Begin address for the initialization values of the .data section.
 // defined in linker script
@@ -142,379 +115,144 @@ void shift_buffer(uint8_t* buffer, uint8_t buffer_len, uint8_t shift_count)
     }
 }
 
+static flasher_state_t flasher_state = NOT_IN;
+
+static void __attribute__ ((noreturn)) flasher_main()
+{
+    USB_Init();
+    packet_parser_init();
+
+#if ENABLE_BOOTLOADER_PROTECTION
+    /* Ensures that the first sector of flash is write-protected preventing that the
+       bootloader is overwritten */
+    CHECK_AND_SET_FLASH_PROTECTION();
+#endif
+
+    flasher_state = WAITING;
+
+    packet_t p = { 0 };
+
+    for(;;) {
+        if (USB_rx_buffer_lead_ptr > 0) {
+            packet_parser_bulk_push(USB_rx_buffer, USB_rx_buffer_lead_ptr);
+            while (packet_parse(&p)) {
+                dispatch_packet(&p);
+            }
+            USB_rx_buffer_lead_ptr = 0;
+            USBD_CDC_ReceivePacket(&hUsbDeviceFS);
+        }
+    }
+}
+
+static __attribute__ ((noreturn))
+void jump_to_firmware(firm_partition_t firm)
+{
+    __IO uint32_t* start_address = (
+        firm == FIRM0 ?
+        (__IO uint32_t*)(FIRM0_START_ADDRESS) :
+        (__IO uint32_t*)(FIRM1_START_ADDRESS)
+    );
+    uint32_t  jump_address = *(start_address+1);
+    pFunction jump = (pFunction)(jump_address);
+
+    CRC_DeInit();
+    GPIO_DeInit();
+    HAL_RCC_DeInit();
+    HAL_DeInit();
+
+    SysTick->CTRL = 0;
+    SysTick->LOAD = 0;
+    SysTick->VAL  = 0;
+
+    __DMB(); // ARM says to use a DMB instruction before relocating VTOR
+    SCB->VTOR = (uint32_t)(start_address); // relocate vector table.
+    __DSB(); // ARM says to use a DSB instruction just after relocating VTOR
+
+    __set_MSP(*start_address);
+    jump();
+
+    for (;;);
+}
+
 int main(void)
 {
     HAL_Init();
     SystemClock_Config();
-
-    // power on wait (soft starting voltage)
-    HAL_Delay(100);
-
-    // peripheral
+    HAL_Delay(50);
     GPIO_Init();
+    CRC_Init();
+    nvs_init();
+    gSystemInitialized = 1;
 
-    if (HAL_GPIO_ReadPin(GPIOC, SW_Pin) == GPIO_PIN_RESET) {
+    uint8_t run_mode = APP_MODE;
+    uint8_t run_firm = FIRM0;
+    uint16_t size = 0;
 
-        CRC_Init();
-        USB_Init();
-
-#if ENABLE_BOOTLOADER_PROTECTION
-        /* Ensures that the first sector of flash is write-protected preventing that the
-           bootloader is overwritten */
-        CHECK_AND_SET_FLASH_PROTECTION();
-#endif
-
-        HAL_Delay(200);
-
-        gSystemInitialized = 1;
-
-
-        while (1) {
-            if (USB_rx_buffer_lead_ptr > USB_rx_buffer_lead_ptr_last) {
-
-                while (1) {
-                    switch (USB_rx_buffer[0]) {
-                    case CMD_GETID:
-                        if (USB_rx_buffer_lead_ptr >= 5) {
-                            cmdGetID(USB_rx_buffer);
-                            shift_buffer(USB_rx_buffer, 0xFF, 5);
-                            USB_rx_buffer_lead_ptr -= 5;
-                            if (USB_rx_buffer_lead_ptr > 0) continue;
-                        }
-                        break;
-                    case CMD_ERASE:
-                        if (USB_rx_buffer_lead_ptr >= 6) {
-                            cmdErase(USB_rx_buffer);
-                            shift_buffer(USB_rx_buffer, 0xFF, 6);
-                            USB_rx_buffer_lead_ptr -= 6;
-                            if (USB_rx_buffer_lead_ptr > 0) continue;
-                        }
-                        break;
-                    case CMD_WRITE:
-                        if (USB_rx_buffer_lead_ptr >= 9) {
-                            cmdWrite(USB_rx_buffer);
-                            if (USB_rx_buffer_lead_ptr > 0) continue;
-                        }
-                        break;
-                    case CMD_RESET:
-                        if (USB_rx_buffer_lead_ptr >= 5) {
-                            cmdReset(USB_rx_buffer);
-                            if (USB_rx_buffer_lead_ptr > 0) continue;
-                        }
-                    default:
-                        USB_rx_buffer_lead_ptr = 0;
-                        break;
-                    }
-                    break;
-                }
-                USB_rx_buffer_lead_ptr_last = USB_rx_buffer_lead_ptr;
-                USBD_CDC_ReceivePacket(&hUsbDeviceFS);
-            }
-            HAL_Delay(10);
-        }
-    } else {
-        /* USER_BUTTON is not pressed. We first check if the first 4 bytes starting from
-           APP_START_ADDRESS contain the MSP (end of SRAM). If not, the LD2 LED blinks quickly. */
-        if (*((uint32_t*) APP_START_ADDRESS) != SRAM_END) {
-            while (1) {
-                HAL_Delay(30);
-                HAL_GPIO_TogglePin(GPIOB, LED_R_Pin);
-            }
-        } else {
-
-            uint32_t  JumpAddress = *(__IO uint32_t*)(APP_START_ADDRESS + 4);
-            pFunction Jump = (pFunction)JumpAddress;
-
-            GPIO_DeInit();
-            HAL_RCC_DeInit();
-            HAL_DeInit();
-
-            SysTick->CTRL = 0;
-            SysTick->LOAD = 0;
-            SysTick->VAL  = 0;
-
-            SCB->VTOR = APP_START_ADDRESS;
-
-            __set_MSP(*(__IO uint32_t*)APP_START_ADDRESS);
-            Jump();
-
-            #if 0
-            /* A valid program seems to exist in the second sector: we so prepare the MCU
-               to start the main firmware */
-            GPIO_DeInit(); //Puts GPIOs in default state
-            SysTick->CTRL = 0x0; //Disables SysTick timer and its related interrupt
-            HAL_DeInit();
-
-            // HAL_RCC_DeInit(); //Disable all interrupts related to clock
-            RCC->CIR = 0x00000000;
-            __set_MSP(*((volatile uint32_t*) APP_START_ADDRESS)); //Set the MSP
-
-            __DMB(); //ARM says to use a DMB instruction before relocating VTOR */
-            SCB->VTOR = APP_START_ADDRESS; //We relocate vector table to the sector 1
-            __DSB(); //ARM says to use a DSB instruction just after relocating VTOR */
-
-            /* We are now ready to jump to the main firmware */
-            uint32_t JumpAddress = *((volatile uint32_t*) (APP_START_ADDRESS + 4));
-            void (*reset_handler)(void) = (void*)JumpAddress;
-            reset_handler(); //We start the execution from he Reset_Handler of the main firmware
-
-            for (;;) ; //Never coming here
-
-            #endif
-        }
-    }
-}
-
-uint8_t queue_USB(uint8_t const* buffer, uint8_t size)
-{
-    __disable_irq();
-    uint8_t i;
-    for (i = 0; i < size; i++) {
-        USB_tx_buffer[USB_tx_buffer_lead_ptr++] = buffer[i];
-        if (USB_tx_buffer_lead_ptr >= 0xFF) {
-            __enable_irq();
-            return i+1;
-        }
-    }
-    __enable_irq();
-    return i;
-}
-
-/* Performs a flash erase of a given number of sectors/pages.
- *
- * An erase command has the following structure:
- *
- * ----------------------------------------
- * | CMD_ID | # of sectors      |  CRC32  |
- * | 1 byte |     1 byte        | 4 bytes |
- * |--------|-------------------|---------|
- * |  0x43  | N or 0xFF for all |   CRC   |
- * ----------------------------------------
- */
-void cmdErase(uint8_t *pucData) {
-    FLASH_EraseInitTypeDef eraseInfo;
-    uint32_t ulBadBlocks = 0, ulCrc = 0;
-    uint32_t pulCmd[] = { pucData[0], pucData[1] };
-
-    memcpy(&ulCrc, pucData + 2, sizeof(uint32_t));
-
-    /* Checks if provided CRC is correct */
-    if (ulCrc == HAL_CRC_Calculate(&hcrc, pulCmd, 2) &&
-        (pucData[1] > 0 && (pucData[1] < FLASH_TOTAL_PAGES - 16 || pucData[1] == 0xFF))) {
-        /* If data[1] contains 0xFF, it deletes all sectors; otherwise
-         * the number of sectors specified. */
-        eraseInfo.PageAddress = APP_START_ADDRESS;
-        eraseInfo.NbPages = pucData[1] == 0xFF ? FLASH_TOTAL_PAGES - 16 : pucData[1];
-        eraseInfo.TypeErase = FLASH_TYPEERASE_PAGES;
-
-        HAL_FLASH_Unlock(); //Unlocks the flash memory
-        HAL_FLASHEx_Erase(&eraseInfo, &ulBadBlocks); //Deletes given sectors */
-        HAL_FLASH_Lock(); //Locks again the flash memory
-
-        /* Sends an ACK */
-        pucData[0] = ACK;
-        // HAL_UART_Transmit(&huart2, (uint8_t *) pucData, 1, HAL_MAX_DELAY);
-        queue_USB(pucData, 1);
-    } else {
-        /* The CRC is wrong: sends a NACK */
-        pucData[0] = NACK;
-        // HAL_UART_Transmit(&huart2, pucData, 1, HAL_MAX_DELAY);
-        queue_USB(pucData, 1);
-    }
-}
-
-/* Retrieve the STM32 MCU ID
- *
- * A GET_ID command has the following structure:
- *
- * --------------------
- * | CMD_ID |  CRC32  |
- * | 1 byte | 4 bytes |
- * |--------|---------|
- * |  0x02  |   CRC   |
- * --------------------
- */
-void cmdGetID(uint8_t *pucData) {
-    uint16_t usDevID;
-    uint32_t ulCrc = 0;
-    uint32_t ulCmd = pucData[0];
-
-    memcpy(&ulCrc, pucData + 1, sizeof(uint32_t));
-
-    /* Checks if provided CRC is correct */
-    if (ulCrc == HAL_CRC_Calculate(&hcrc, &ulCmd, 1)) {
-        usDevID = (uint16_t) (DBGMCU->IDCODE & 0xFFF); //Retrieves MCU ID from DEBUG interface
-
-        /* Sends an ACK */
-        pucData[0] = ACK;
-
-        // HAL_UART_Transmit(&huart2, pucData, 1, HAL_MAX_DELAY);
-        queue_USB(pucData, 1);
-
-        /* Sends the MCU ID */
-        // HAL_UART_Transmit(&huart2, (uint8_t *) &usDevID, 2, HAL_MAX_DELAY);
-        queue_USB((uint8_t const*) &usDevID, 2);
-    } else {
-        /* The CRC is wrong: sends a NACK */
-        pucData[0] = NACK;
-        // HAL_UART_Transmit(&huart2, pucData, 1, HAL_MAX_DELAY);
-        queue_USB(pucData, 1);
-    }
-}
-
-/* Retrieve the STM32 MCU ID
- *
- * A RESET command has the following structure:
- *
- * --------------------
- * | CMD_ID |  CRC32  |
- * | 1 byte | 4 bytes |
- * |--------|---------|
- * |  0xCC  |   CRC   |
- * --------------------
- */
-void cmdReset(uint8_t *pucData) {
-    uint32_t ulCrc = 0;
-    uint32_t ulCmd = pucData[0];
-
-    memcpy(&ulCrc, pucData + 1, sizeof(uint32_t));
-
-    /* Checks if provided CRC is correct */
-    if (ulCrc == HAL_CRC_Calculate(&hcrc, &ulCmd, 1)) {
-        /* Sends an ACK */
-        pucData[0] = ACK;
-
-        // HAL_UART_Transmit(&huart2, pucData, 1, HAL_MAX_DELAY);
-        queue_USB(pucData, 1);
-
-        HAL_Delay(1000);
-
-        NVIC_SystemReset();
-
-    } else {
-        /* The CRC is wrong: sends a NACK */
-        pucData[0] = NACK;
-        // HAL_UART_Transmit(&huart2, pucData, 1, HAL_MAX_DELAY);
-        queue_USB(pucData, 1);
-    }
-}
-
-/* Performs a write of 16 bytes starting from the specified address.
- *
- * A write command has the following structure:
- *
- * ----------------------------------------
- * | CMD_ID | starting address  |  CRC32  |
- * | 1 byte |     4 byte        | 4 bytes |
- * |--------|-------------------|---------|
- * |  0x2b  |    0x08004000     |   CRC   |
- * ----------------------------------------
- *
- * The second message has the following structure
- *
- * ------------------------------
- * |    data bytes    |  CRC32  |
- * |      16 bytes    | 4 bytes |
- * |------------------|---------|
- * | BBBBBBBBBBBBBBBB |   CRC   |
- * ------------------------------
- */
-void cmdWrite(uint8_t *pucData) {
-    uint32_t ulSaddr = 0, ulCrc = 0;
-
-    memcpy(&ulSaddr, pucData + 1, sizeof(uint32_t));
-    memcpy(&ulCrc, pucData + 5, sizeof(uint32_t));
-
-    uint32_t pulData[5];
-    for(int i = 0; i < 5; i++) pulData[i] = pucData[i];
-
-    // consume header here
-    shift_buffer(USB_rx_buffer, 0xFF, 9);
-    USB_rx_buffer_lead_ptr -= 9;
-
-    /* Checks if provided CRC is correct */
-    if (ulCrc == HAL_CRC_Calculate(&hcrc, pulData, 5) && ulSaddr >= APP_START_ADDRESS) {
-
-        /* Sends an ACK */
-        uint8_t ack = ACK;
-        queue_USB((uint8_t const *) &ack, 1);
-
-        // waiting for receive
-        USB_rx_buffer_lead_ptr_last = 0;
-        USBD_CDC_ReceivePacket(&hUsbDeviceFS);
-
-        /* Now retrieves given amount of bytes plus the CRC32 */
-        while (1) {
-            if (USB_rx_buffer_lead_ptr > 0) {
-                if (USB_rx_buffer_lead_ptr == 20) {
-                    break;
-                } else {
-                    PANIC("traffic accident");
-                }
-                USB_rx_buffer_lead_ptr = 0;
-                USBD_CDC_ReceivePacket(&hUsbDeviceFS);
-            }
-            HAL_Delay(5);
-        }
-
-        memcpy(&ulCrc, pucData + 16, sizeof(uint32_t));
-
-        /* Checks if provided CRC is correct */
-        if (ulCrc == HAL_CRC_Calculate(&hcrc, (uint32_t*) pucData, 4)) {
-            HAL_FLASH_Unlock(); //Unlocks the flash memory
-
-            /* Decode the sent bytes using AES-128 ECB */
-            aes_enc_dec((uint8_t*) pucData, AES_KEY, 1);
-            /*
-            for (uint8_t i = 0; i < 16; i++) {
-                // Store each byte in flash memory starting from the specified address
-                HAL_FLASH_Program(FLASH_TYPEPROGRAM_BYTE, ulSaddr, pucData[i]);
-                ulSaddr += 1;
-            }
-            */
-            for (uint8_t i = 0; i < 4; i++) {
-                /* Store each byte in flash memory starting from the specified address */
-                /*
-                uint8_t tmp;
-                tmp = pucData[i*4];
-                pucData[i*4]   = pucData[i*4+3];
-                pucData[i*4+3] = tmp;
-                tmp = pucData[i*4+1];
-                pucData[i*4+1] = pucData[i*4+2];
-                pucData[i*4+2] = tmp;
-                */
-                HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, ulSaddr, ((uint32_t*)pucData)[i]);
-                ulSaddr += 4;
-            }
-            HAL_FLASH_Lock(); //Locks again the flash memory
-
-            /* Sends an ACK */
-            ack = ACK;
-            // HAL_UART_Transmit(&huart2, (uint8_t *) pucData, 1, HAL_MAX_DELAY);
-            queue_USB((uint8_t const *) &ack, 1);
-
-            shift_buffer(USB_rx_buffer, 0xFF, 20);
-            USB_rx_buffer_lead_ptr -= 20;
-
-        } else {
-            shift_buffer(USB_rx_buffer, 0xFF, 20);
-            USB_rx_buffer_lead_ptr -= 20;
-
-            goto sendnack;
-        }
-    } else {
-        goto sendnack;
-    }
-
-    return;
-
-sendnack:
+    if (nvs_get("RUN_MODE", &run_mode, &size, 1) == KEY_NOT_FOUND ||
+        nvs_get("RUN_FIRM", &run_firm, &size, 1) == KEY_NOT_FOUND)
     {
-        uint8_t nack = NACK;
-        queue_USB((uint8_t const *) &nack, 1);
+        run_mode = FLASHER_MODE;
+        run_firm = FIRM1;
+        nvs_clear();
+        nvs_put("RUN_MODE", &run_mode, 1, 1);
+        nvs_put("RUN_FIRM", &run_firm, 1, 1);
+        if (nvs_commit() != NVS_OK) {
+            PANIC("flash commit failed");
+        }
     }
 
-    return;
+    if (run_mode == FLASHER_MODE) {
+        flasher_main();
+    } else {
+        uint8_t tried_other_side = 0;
+        uint32_t crc = 0, calc_crc = 0;
+    verify_firm_and_run:
+        switch (run_firm) {
+        case FIRM0: {
+            crc      = *(((uint32_t*)FIRM0_CRC_ADDRESS));
+            calc_crc = calc_crc32((uint32_t*)(FIRM0_START_ADDRESS), FIRM0_SIZE);
+            if (crc == calc_crc) {
+                // verified
+                jump_to_firmware(FIRM0);
+            } else if (tried_other_side) {
+                run_mode = FLASHER_MODE;
+                run_firm = FIRM1;
+                nvs_put("RUN_MODE", &run_mode, 1, 1);
+                nvs_put("RUN_FIRM", &run_firm, 1, 1);
+                nvs_commit();
+                NVIC_SystemReset();
+            } else {
+                // data broken?
+                run_firm = FIRM1;
+                tried_other_side = 1;
+                goto verify_firm_and_run;
+            }
+            break;
+        }
+        case FIRM1:
+        default: {
+            crc      = *(((uint32_t*)FIRM1_CRC_ADDRESS));
+            calc_crc = calc_crc32((uint32_t*)(FIRM1_START_ADDRESS), FIRM1_SIZE);
+            if (crc == calc_crc) {
+                // verified
+                jump_to_firmware(FIRM1);
+            } else if (tried_other_side) {
+                run_mode = FLASHER_MODE;
+                run_firm = FIRM1;
+                nvs_put("RUN_MODE", &run_mode, 1, 1);
+                nvs_put("RUN_FIRM", &run_firm, 1, 1);
+                nvs_commit();
+                NVIC_SystemReset();
+            } else {
+                // data broken?
+                run_firm = FIRM0;
+                tried_other_side = 1;
+                goto verify_firm_and_run;
+            }
+            break;
+        }
+        }
+    }
 }
 
 void CHECK_AND_SET_FLASH_PROTECTION(void) {
@@ -537,21 +275,32 @@ void CHECK_AND_SET_FLASH_PROTECTION(void) {
     }
 }
 
+uint32_t toggle_time_r = 0;
+uint32_t toggle_time_g = 0;
+uint32_t toggle_time_b = 0;
 
 void main_tick_1ms() {}
 void main_tick_5ms() {
-    if (USB_tx_buffer_lead_ptr > 0) {
-        USB_Send(USB_tx_buffer, USB_tx_buffer_lead_ptr);
-        USB_tx_buffer_lead_ptr = 0;
-    }
+    USB_SendTick();
 }
 void main_tick_10ms()  {}
-void main_tick_50ms()  {}
-void main_tick_100ms() {
-    HAL_GPIO_TogglePin(GPIOB, LED_R_Pin);
+void main_tick_50ms()  {
+    if (toggle_time_r > 0) {
+        HAL_GPIO_TogglePin(GPIOB, LED_R_Pin);
+        toggle_time_r--;
+    }
+    if (toggle_time_g > 0) {
+        HAL_GPIO_TogglePin(GPIOB, LED_G_Pin);
+        toggle_time_g--;
+    }
+    if (toggle_time_b > 0) {
+        HAL_GPIO_TogglePin(GPIOB, LED_B_Pin);
+        toggle_time_b--;
+    }
 }
+void main_tick_100ms() {}
 void main_tick_500ms() {}
-void main_tick_1s()    {}
+void main_tick_1s() {}
 
 void SystemClock_Config(void)
 {

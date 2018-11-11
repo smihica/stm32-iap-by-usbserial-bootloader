@@ -8,9 +8,11 @@ BUILD_DIR = build
 
 # C sources
 C_SOURCES =  \
+../drivers/STM32F3xx_HAL_Driver/Src/stm32f3xx_hal.c \
+../drivers/STM32F3xx_HAL_Driver/Src/stm32f3xx_hal_flash.c \
+../drivers/STM32F3xx_HAL_Driver/Src/stm32f3xx_hal_flash_ex.c \
 ../drivers/STM32F3xx_HAL_Driver/Src/stm32f3xx_hal_rcc.c \
 ../drivers/STM32F3xx_HAL_Driver/Src/stm32f3xx_hal_rcc_ex.c \
-../drivers/STM32F3xx_HAL_Driver/Src/stm32f3xx_hal.c \
 ../drivers/STM32F3xx_HAL_Driver/Src/stm32f3xx_hal_gpio.c \
 ../drivers/STM32F3xx_HAL_Driver/Src/stm32f3xx_hal_cortex.c \
 $(wildcard ./*.c)

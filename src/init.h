@@ -4,10 +4,8 @@
 #include "stm32f3xx_hal.h"
 #include "stm32f3xx_hal_tim.h"
 
-extern uint8_t gSystemInitialized;
+extern volatile uint8_t gSystemInitialized;
 extern char log_buffer[];
-
-#include "usb_device.h"
 
 #define _LOG_OUTPUT_TO()                                                \
     {                                                                   \

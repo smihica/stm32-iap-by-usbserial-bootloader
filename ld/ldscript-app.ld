@@ -43,7 +43,8 @@ MEMORY
 {
 RAM (xrw)      : ORIGIN = 0x20000000, LENGTH = 64K
 CCMRAM (rw)      : ORIGIN = 0x10000000, LENGTH = 16K
-FLASH (rx)      : ORIGIN = 0x8008000, LENGTH = 512K - 32K
+/* FLASH (rx)      : ORIGIN = 0x8008000, LENGTH = 240K /* (512K - 32K) / 2 */
+FLASH (rx)      : ORIGIN = 0x8044000, LENGTH = 240K /* (512K - 32K) / 2 */
 }
 
 /* Define output sections */

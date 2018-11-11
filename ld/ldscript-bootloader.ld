@@ -2,8 +2,9 @@
 
 MEMORY
 {
-    FLASH (rx)  : ORIGIN = 0x08000000, LENGTH = 32K /* 16 pages */
-    SRAM (xrw)  : ORIGIN = 0x20000000, LENGTH = 64K
+    FLASH (rx)     : ORIGIN = 0x08000000, LENGTH = 30K /* 16 pages */
+    NVS_FLASH (rx) : ORIGIN = 0x08007800, LENGTH = 2K /* 16 pages */
+    SRAM (xrw)     : ORIGIN = 0x20000000, LENGTH = 64K
 }
 
 ENTRY(_start);
@@ -39,6 +40,7 @@ SECTIONS
 
     .data : ALIGN(4)
     {
+        . = ALIGN(4);
         _sdata = .;        /* create a global symbol at data start */
 
         *(.data)
@@ -46,7 +48,7 @@ SECTIONS
 
         . = ALIGN(4);
         _edata = .;        /* define a global symbol at data end */
-    } >SRAM AT>FLASH
+    } >SRAM AT> FLASH
 
      /* Uninitialized data section */
     .bss (NOLOAD) : ALIGN(4)
@@ -76,5 +78,10 @@ SECTIONS
       . = . + _Min_Stack_Size;
       . = ALIGN(8);
     } >SRAM
+
+    .nvs_flash : ALIGN(4)
+    {
+        *(.nvs_flash)
+    } >NVS_FLASH
 
 }

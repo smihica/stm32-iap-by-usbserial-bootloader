@@ -1,15 +1,16 @@
 #include "init.h"
 #include "usbd_cdc_if.h"
+#include "usb_device.h"
 #include "gpio.h"
 
 extern USBD_HandleTypeDef hUsbDeviceFS;
 
-extern uint8_t USB_rx_buffer[0xFF];
-extern uint8_t USB_rx_buffer_lead_ptr;
+extern uint8_t USB_rx_buffer[0x7F];
+extern volatile uint8_t USB_rx_buffer_lead_ptr;
 
 // this is not used.
 USBD_CDC_LineCodingTypeDef LineCoding = {
-    115200, /* baud rate*/
+    115200 * 8, /* baud rate*/
     0x00,   /* stop bits-1*/
     0x00,   /* parity - none*/
     0x08    /* nb. of bits 8*/
@@ -97,6 +98,7 @@ static int8_t CDC_Control_FS  (uint8_t cmd, uint8_t* pbuf, uint16_t length)
 
 static int8_t CDC_Receive_FS(uint8_t* Buf, uint32_t *Len)
 {
+    (void)Buf;
     __disable_irq();
 	if (USB_rx_buffer_lead_ptr == 0) {
 		USB_rx_buffer_lead_ptr = (*Len);

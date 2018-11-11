@@ -1,6 +1,7 @@
 build/
-node_modules
-package-lock.json
+tools/node_modules/
+tools/package-lock.json
 .dep/
-example-app/build
-example-app/.dep
+example-app/build/
+example-app/.dep/
+memo/
