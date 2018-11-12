@@ -110,13 +110,16 @@
                                                 This value can be provided and adapted by the user application. */
 #endif /* HSI_VALUE */
 
-/*!< Uncomment the following line if you need to relocate your vector Table in
-     Internal SRAM. */
-/* #define VECT_TAB_SRAM */
-// #define VECT_TAB_OFFSET  0x8000
-#define VECT_TAB_OFFSET  0x44000
-/*!< Vector Table base offset field.
-  This value must be a multiple of 0x200. */
+/*
+#if defined (FIRM0)
+  #define VECT_TAB_OFFSET  0x8000
+#elif defined (FIRM1)
+  #define VECT_TAB_OFFSET  0x44000
+#else
+  #error "set TARGET_PARTION. FIRM0 or FIRM1."
+#endif
+*/
+
 /**
   * @}
   */
@@ -199,11 +202,14 @@ void SystemInit(void)
   /* Disable all interrupts */
   RCC->CIR = 0x00000000U;
 
+/*
 #ifdef VECT_TAB_SRAM
-  SCB->VTOR = SRAM_BASE | VECT_TAB_OFFSET; /* Vector Table Relocation in Internal SRAM */
+  SCB->VTOR = SRAM_BASE | VECT_TAB_OFFSET; // Vector Table Relocation in Internal SRAM
 #else
-  SCB->VTOR = FLASH_BASE | VECT_TAB_OFFSET; /* Vector Table Relocation in Internal FLASH */
+  SCB->VTOR = FLASH_BASE | VECT_TAB_OFFSET; // Vector Table Relocation in Internal FLASH
 #endif
+*/
+
 }
 
 /**

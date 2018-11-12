@@ -3,6 +3,8 @@ TARGET = app-firmware
 DEBUG = 1
 OPT = -O2
 
+TARGET_FIRM = FIRM0
+
 # Build path
 BUILD_DIR = build
 
@@ -51,7 +53,8 @@ AS_DEFS =
 # C defines
 C_DEFS =  \
 -DUSE_HAL_DRIVER \
--DSTM32F303xE
+-DSTM32F303xE \
+-D$(TARGET_FIRM) \
 
 # AS includes
 AS_INCLUDES =
@@ -73,7 +76,7 @@ CFLAGS = $(MCU) $(C_DEFS) $(C_INCLUDES) $(OPT) -Wall -fdata-sections -ffunction-
 CFLAGS += -MMD -MP -MF"$(@:%.o=%.d)" -MT"$(@:%.o=%.d)"
 
 # link script
-LDSCRIPT = ../ld/ldscript-app.ld
+LDSCRIPT = ../ld/ldscript-app.$(TARGET_FIRM).ld
 
 # libraries
 LIBS = -lc -lm
@@ -83,10 +86,14 @@ LDFLAGS = $(MCU) --specs=nano.specs --specs=nosys.specs -T$(LDSCRIPT) $(LIBDIR) 
 ## ------------------------------------
 
 # default action: build all
-all: $(BUILD_DIR)/$(TARGET).elf $(BUILD_DIR)/$(TARGET).hex $(BUILD_DIR)/$(TARGET).bin
+all: $(BUILD_DIR)/$(TARGET).$(TARGET_FIRM).elf $(BUILD_DIR)/$(TARGET).$(TARGET_FIRM).hex $(BUILD_DIR)/$(TARGET).$(TARGET_FIRM).bin
 
-flash: all
-	PYTHONPATH=/usr/local/lib/python2.7/site-packages python ../flasher.py /dev/tty.usbmodem00000000001A build/app-firmware.hex --with-reset
+allfirm:
+	$(MAKE) TARGET_FIRM=FIRM0
+	$(MAKE) TARGET_FIRM=FIRM1
+
+flash: allfirm
+	node ../tools/flasher.js
 
 # binary
 # list of C objects
@@ -102,7 +109,7 @@ $(BUILD_DIR)/%.o: %.c Makefile | $(BUILD_DIR)
 $(BUILD_DIR)/%.o: %.s Makefile | $(BUILD_DIR)
 	$(AS) -c $(CFLAGS) $< -o $@
 
-$(BUILD_DIR)/$(TARGET).elf: $(OBJECTS) Makefile
+$(BUILD_DIR)/$(TARGET).$(TARGET_FIRM).elf: $(OBJECTS) Makefile
 	$(CC) $(OBJECTS) $(LDFLAGS) -o $@
 	$(SZ) $@
 

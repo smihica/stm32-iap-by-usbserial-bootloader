@@ -17,7 +17,7 @@ int main(void) {
     nvs_init();
     gSystemInitialized = 1;
     while (1) {
-        HAL_GPIO_TogglePin(GPIOB, LED_B_Pin);
+        HAL_GPIO_TogglePin(GPIOB, LED_G_Pin);
         HAL_Delay(100);
         if (reset_sw_on) {
             uint8_t next_run_mode = 0x01; // FLASHER_MODE
